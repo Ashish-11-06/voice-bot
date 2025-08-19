@@ -1,7 +1,0 @@
-Django>=5.0
-uvicorn[standard]>=0.30
-python-socketio[asgi]>=5.11
-simple-websocket>=1.0
-vosk>=0.3.45
-ffmpeg-python>=0.2.0
-numpy>=1.26
