@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Voice Chatbot</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        #messages {
+            margin-top: 20px;
+        }
+
+        #mic-btn {
+            background-color: #ff4b5c;
+            border: none;
+            border-radius: 50%;
+            width: 80px;
+            height: 80px;
+            font-size: 24px;
+            color: white;
+            cursor: pointer;
+        }
+
+        #mic-btn.listening {
+            background-color: #4CAF50;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7);
+            }
+
+            70% {
+                box-shadow: 0 0 0 15px rgba(76, 175, 80, 0);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(76, 175, 80, 0);
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🎙️ Voice Chatbot</h1>
+    <button id="mic-btn">🎤</button>
+    <div id="messages"></div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        const messagesDiv = document.getElementById("messages");
+        const micBtn = document.getElementById("mic-btn");
+
+        let pc;
+        let dc;       // DataChannel to send user text
+        let recognition;
+
+        // --- Start WebRTC ---
+        async function startWebRTC() {
+            pc = new RTCPeerConnection({
+                iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+            });
+
+            // Create a recvonly transceiver so we can receive bot's audio
+            pc.addTransceiver('audio', { direction: 'recvonly' });
+
+            // Play bot audio
+            pc.ontrack = (event) => {
+                const audio = document.createElement("audio");
+                audio.autoplay = true;
+                audio.srcObject = event.streams[0];
+
+                // Stop recognition while bot speaks to avoid feedback
+                audio.addEventListener("play", () => {
+                    try { recognition && recognition.abort(); } catch { }
+                });
+                audio.addEventListener("ended", () => {
+                    try { recognition && recognition.start(); } catch { }
+                });
+
+                document.body.appendChild(audio);
+            };
+
+            // Data channel to send user text
+            dc = pc.createDataChannel("user_text");
+            dc.onopen = () => console.log("✅ DataChannel open");
+            dc.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    if (msg.bot_text) {
+                        const p = document.createElement("p");
+                        p.textContent = "🤖 " + msg.bot_text;
+                        messagesDiv.appendChild(p);
+                    }
+                } catch { }
+            };
+
+            // Create offer and send to server
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            const resp = await fetch("/webrtc/offer", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    sdp: pc.localDescription.sdp,
+                    type: pc.localDescription.type
+                })
+            });
+            const answer = await resp.json();
+            await pc.setRemoteDescription(answer);
+        }
+
+        function setupSpeechRecognition() {
+            if ('webkitSpeechRecognition' in window) {
+                recognition = new webkitSpeechRecognition();
+            } else if ('SpeechRecognition' in window) {
+                recognition = new SpeechRecognition();
+            }
+
+            if (!recognition) {
+                micBtn.disabled = true;
+                micBtn.textContent = "❌ No Mic Support";
+                console.error("SpeechRecognition not supported");
+                return;
+            }
+
+            recognition.lang = "en-US";
+            recognition.interimResults = true;
+            recognition.continuous = true;
+
+            recognition.onresult = (event) => {
+                let finalText = "";
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const res = event.results[i];
+                    if (res.isFinal) finalText += res[0].transcript;
+                }
+                if (finalText) {
+                    const p = document.createElement("p");
+                    p.textContent = "🧑 " + finalText;
+                    messagesDiv.appendChild(p);
+
+                    // send to server via DataChannel
+                    if (dc && dc.readyState === "open") {
+                        dc.send(JSON.stringify({ text: finalText }));
+                    }
+                }
+            };
+
+            recognition.onerror = (e) => {
+                console.warn("SpeechRecognition error:", e.error);
+            };
+
+            recognition.onend = () => {
+                // auto-restart to simulate continuous on iOS/Chrome
+                console.log("🎙️ Restarting mic...");
+                try { recognition.start(); } catch { }
+            };
+        }
+
+        micBtn.addEventListener("click", async () => {
+            micBtn.disabled = true;
+            micBtn.textContent = "🎤 Listening...";
+            await startWebRTC();
+            setupSpeechRecognition();
+            recognition && recognition.start();
+        });
+    </script>
+
+</body>
+
+</html>
