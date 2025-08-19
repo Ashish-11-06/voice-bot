@@ -86,3 +86,7 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+
+
+*.zip
+vosk-model-small-en-us-0.15/*
