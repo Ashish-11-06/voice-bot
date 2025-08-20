@@ -121,7 +121,7 @@ async def stt_stream(track: MediaStreamTrack, bot_track: BotAudioTrack, send_fn)
                     text = (result.get("text") or "").strip()
                     if text:
                         send_fn({"user_text": text})
-                        reply_text = f"Hey, you just said {text}"
+                        reply_text = f"you just said {text}"
                         send_fn({"bot_text": reply_text})
                         b64_wav = await generate_voice_response(reply_text)
                         bot_track.feed_wav_bytes(base64.b64decode(b64_wav))
@@ -167,7 +167,7 @@ async def webrtc_offer(request):
                 user_text = obj.get("text")
                 if user_text:
                     send_json({"user_text": user_text})
-                    reply_text = f"Hey, you just said {user_text}"
+                    reply_text = f"you just said {user_text}"
                     send_json({"bot_text": reply_text})
                     b64_wav = await generate_voice_response(reply_text)
                     bot_track.feed_wav_bytes(base64.b64decode(b64_wav))
