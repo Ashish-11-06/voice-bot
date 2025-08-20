@@ -89,4 +89,4 @@ var/
 
 
 *.zip
-vosk-model-small-en-us-0.15/*
+# vosk-model-small-en-us-0.15/*
