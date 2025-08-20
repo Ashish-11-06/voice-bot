@@ -1,14 +1,13 @@
 from .common_utils import *
 from urllib.parse import urljoin
-from .website_scraper import build_website_guide
 from .website_guide import get_website_guide_response
 import os
 import json
 import requests
 import uuid
 from django.contrib.auth import get_user_model
-from .models import ChatbotConversation
-from .serializers import ChatbotConversationSerializer
+# from .models import ChatbotConversation
+# from .serializers import ChatbotConversationSerializer
 import random
 import time
 import re
@@ -47,15 +46,15 @@ def store_session_in_db(history, user, chatbot_type):
     print(f"\n[DB] Saving session with ID: {session_id}")
     print(f"[DB] User: {user}, Type: {chatbot_type}, History Length: {len(history)}")
 
-    for i, turn in enumerate(history):
-        print(f"[DB] Inserting Turn {i+1}: User = {turn['user']}, Bot = {turn['bot']}")
-        ChatbotConversation.objects.create(
-            user=user,
-            chatbot_type=chatbot_type,
-            session_id=session_id,
-            query=turn["user"],
-            response=turn["bot"]
-        )
+    # for i, turn in enumerate(history):
+    #     print(f"[DB] Inserting Turn {i+1}: User = {turn['user']}, Bot = {turn['bot']}")
+    #     ChatbotConversation.objects.create(
+    #         user=user,
+    #         chatbot_type=chatbot_type,
+    #         session_id=session_id,
+    #         query=turn["user"],
+    #         response=turn["bot"]
+    #     )
 
     print(f"[DB] Session {session_id} successfully stored.\n")
     return session_id
