@@ -87,6 +87,6 @@ var/
 .installed.cfg
 *.egg
 
-
+chat_history.json
 *.zip
 # vosk-model-small-en-us-0.15/*
