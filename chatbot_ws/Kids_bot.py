@@ -472,7 +472,7 @@ class MultiLanguageBalSamagamChatbot:
         self.all_sessions = history
         self._save_all_sessions()
 
-    # ---------- Chat Function ----------
+        # ---------- Chat Function ----------
     def chat(self, session_id: str, user_message: str) -> str:
         """
         Handles a chat message for a given session (sid).
@@ -490,18 +490,21 @@ class MultiLanguageBalSamagamChatbot:
         # Add user message to persistent history
         self.update_user_history(session_id, "user", user_message)
 
-        # Build request
-        headers = {"Authorization": f"Bearer {self.mistral_api_key}", "Content-Type": "application/json"}
-        payload = {
-            "model": "mistral-small-latest",
-            "messages": self.get_user_history(session_id)  # send only that user's history
-        }
+        # Detect language if auto-detect is enabled
+        if self.auto_detect:
+            self.current_language = self.detect_language(user_message)
 
-        # Call API
+        # Get conversation history (last 6 turns max)
+        conversation_history = self.get_user_history(session_id)
+        
+
+        # Call Mistral API via helper function
         try:
-            response = requests.post(self.mistral_api_url, headers=headers, json=payload)
-            result = response.json()
-            bot_reply = result["choices"][0]["message"]["content"]
+            bot_reply = self.call_mistral_api(
+                user_message,
+                self.current_language,
+                conversation_history
+            )
         except Exception as e:
             print(f"API Error: {e}")
             bot_reply = self.get_fallback_response(user_message, self.current_language)
