@@ -6,10 +6,12 @@ import re
 from datetime import datetime
 
 class MultiLanguageBalSamagamChatbot:
-    def _init_(self):
+    def __init__(self):
         # Mistral API configuration
         self.mistral_api_key = os.getenv('MISTRAL_API_KEY', 'LY1MwjaPpQnvApjHW0p7pgexEHvhK9Ew')
         self.mistral_api_url = "https://api.mistral.ai/v1/chat/completions"
+        
+        self.auto_detect = False
         
         # Supported languages
         self.languages = {
@@ -21,6 +23,8 @@ class MultiLanguageBalSamagamChatbot:
         }
         
         self.current_language = 'en'  # Default language
+        self.history_file = self.CHAT_HISTORY_FILE
+        self.all_sessions = self._load_all_sessions()
         
         # Multi-language welcome messages
         self.welcome_messages = {
@@ -355,55 +359,158 @@ class MultiLanguageBalSamagamChatbot:
         
         return defaults.get(language, defaults['en'])
     
-    def choose_language(self):
-        """Interactive language selection"""
-        print("\n" + "="*60)
-        print("🌍 भाषा निवडा / Choose Language / भाषा चुनें")
-        print("="*60)
-        print("1. English 🇬🇧")
-        print("2. हिंदी (Hindi) 🇮🇳") 
-        print("3. मराठी (Marathi) 🇮🇳")
-        print("4. Hinglish (Hindi + English) 🔀")
-        print("5. Manglish (Marathi + English) 🔀")
-        print("6. Auto-detect from my messages 🤖")
-        print("-"*60)
+    # def choose_language(self):
+    #     """Interactive language selection"""
+    #     print("\n" + "="*60)
+    #     print("🌍 भाषा निवडा / Choose Language / भाषा चुनें")
+    #     print("="*60)
+    #     print("1. English 🇬🇧")
+    #     print("2. हिंदी (Hindi) 🇮🇳") 
+    #     print("3. मराठी (Marathi) 🇮🇳")
+    #     print("4. Hinglish (Hindi + English) 🔀")
+    #     print("5. Manglish (Marathi + English) 🔀")
+    #     print("6. Auto-detect from my messages 🤖")
+    #     print("-"*60)
         
-        while True:
-            try:
-                choice = input("आपकी पसंद / Your choice / तुमची निवड (1-6): ").strip()
+    #     while True:
+    #         try:
+    #             choice = input("आपकी पसंद / Your choice / तुमची निवड (1-6): ").strip()
                 
-                if choice == '1':
-                    self.current_language = 'en'
-                    print("✅ Language set to English!")
-                    break
-                elif choice == '2':
-                    self.current_language = 'hi'
-                    print("✅ भाषा हिंदी में सेट की गई!")
-                    break
-                elif choice == '3':
-                    self.current_language = 'mr'
-                    print("✅ भाषा मराठीत सेट केली!")
-                    break
-                elif choice == '4':
-                    self.current_language = 'hinglish'
-                    print("✅ Language set to Hinglish!")
-                    break
-                elif choice == '5':
-                    self.current_language = 'manglish'
-                    print("✅ Language set to Manglish!")
-                    break
-                elif choice == '6':
-                    self.current_language = 'en'  # Default, will auto-detect
-                    print("✅ Auto-detection enabled! I'll respond in the language you use!")
-                    break
-                else:
-                    print("❌ कृपया 1-6 में से चुनें / Please choose 1-6 / कृपया 1-6 मधून निवडा")
-            except KeyboardInterrupt:
-                print("\n👋 धन्यवाद! / Thank you! / धन्यवाद!")
-                return False
+    #             if choice == '1':
+    #                 self.current_language = 'en'
+    #                 print("✅ Language set to English!")
+    #                 break
+    #             elif choice == '2':
+    #                 self.current_language = 'hi'
+    #                 print("✅ भाषा हिंदी में सेट की गई!")
+    #                 break
+    #             elif choice == '3':
+    #                 self.current_language = 'mr'
+    #                 print("✅ भाषा मराठीत सेट केली!")
+    #                 break
+    #             elif choice == '4':
+    #                 self.current_language = 'hinglish'
+    #                 print("✅ Language set to Hinglish!")
+    #                 break
+    #             elif choice == '5':
+    #                 self.current_language = 'manglish'
+    #                 print("✅ Language set to Manglish!")
+    #                 break
+    #             elif choice == '6':
+    #                 self.current_language = 'en'  # Default, will auto-detect
+    #                 print("✅ Auto-detection enabled! I'll respond in the language you use!")
+    #                 break
+    #             else:
+    #                 print("❌ कृपया 1-6 में से चुनें / Please choose 1-6 / कृपया 1-6 मधून निवडा")
+    #         except KeyboardInterrupt:
+    #             print("\n👋 धन्यवाद! / Thank you! / धन्यवाद!")
+    #             return False
         
-        return True
+    #     return True
+  
+    def choose_language(self, default="auto"):
+        """
+        Set default language mode.
+        Options: en, hi, mr, hinglish, manglish, auto
+        Default = auto-detect
+        """
+        valid_choices = ["en", "hi", "mr", "hinglish", "manglish", "auto"]
+
+        if default not in valid_choices:
+            default = "auto"
+
+        if default == "en":
+            self.current_language = "en"
+        elif default == "hi":
+            self.current_language = "hi"
+        elif default == "mr":
+            self.current_language = "mr"
+        elif default == "hinglish":
+            self.current_language = "hinglish"
+        elif default == "manglish":
+            self.current_language = "manglish"
+        else:
+            self.current_language = "en"   # default language base
+            self.auto_detect = True        # flag to enable auto detection
+
+        return self.current_language
+
     
+    # ---------- History Handling ----------
+    
+    CHAT_HISTORY_FILE = "chat_history.json"
+    
+    def _load_all_sessions(self):
+        """Load all chat histories (multiple users)."""
+        if os.path.exists(self.history_file):
+            with open(self.history_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+
+    def _save_all_sessions(self):
+        """Save all chat histories back to file."""
+        with open(self.history_file, "w", encoding="utf-8") as f:
+            json.dump(self.all_sessions, f, ensure_ascii=False, indent=2)
+
+    def get_user_history(self, user_id):
+        """Get history for one user."""
+        return self.all_sessions.get(user_id, [])
+
+    def update_user_history(self, user_id, role, content):
+        """Add new message to user's history and save."""
+        if user_id not in self.all_sessions:
+            self.all_sessions[user_id] = []
+        self.all_sessions[user_id].append({"role": role, "content": content})
+        self._save_all_sessions()
+        
+    def load_history(self):
+        """Load all chat histories (for backward compatibility)."""
+        return self._load_all_sessions()
+
+    def save_history(self, history):
+        """Save all chat histories (for backward compatibility)."""
+        self.all_sessions = history
+        self._save_all_sessions()
+
+    # ---------- Chat Function ----------
+    def chat(self, session_id: str, user_message: str) -> str:
+        """
+        Handles a chat message for a given session (sid).
+        Keeps track of history per user/session inside one JSON file.
+        """
+        history = self.load_history()
+
+        # Ensure session exists
+        if session_id not in history:
+            history[session_id] = []
+
+        # Append user message
+        history[session_id].append({"role": "user", "content": user_message})
+
+        # Add user message to persistent history
+        self.update_user_history(session_id, "user", user_message)
+
+        # Build request
+        headers = {"Authorization": f"Bearer {self.mistral_api_key}", "Content-Type": "application/json"}
+        payload = {
+            "model": "mistral-small-latest",
+            "messages": self.get_user_history(session_id)  # send only that user's history
+        }
+
+        # Call API
+        try:
+            response = requests.post(self.mistral_api_url, headers=headers, json=payload)
+            result = response.json()
+            bot_reply = result["choices"][0]["message"]["content"]
+        except Exception as e:
+            print(f"API Error: {e}")
+            bot_reply = self.get_fallback_response(user_message, self.current_language)
+
+        # Save bot reply
+        self.update_user_history(session_id, "assistant", bot_reply)
+
+        return bot_reply
+
     def start_conversation(self):
         """Start the interactive multi-language chat session"""
         print("\n" + "="*70)
@@ -592,7 +699,7 @@ def main():
     chatbot = MultiLanguageBalSamagamChatbot()
     chatbot.start_conversation()
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()
 
 # Example usage for integration:

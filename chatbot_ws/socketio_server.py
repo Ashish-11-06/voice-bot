@@ -3,77 +3,139 @@ import os
 import django
 import socketio
 import json
-from vosk import Model, KaldiRecognizer
+import tempfile
+import base64
+import wave
+import speech_recognition as sr
 
+from chatbot.services.chatbot_core import process_text_message
+from .Kids_bot import MultiLanguageBalSamagamChatbot
+
+# Django setup
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "chatbot_project.settings")
 django.setup()
+
 
 # Socket.IO ASGI app
 sio = socketio.AsyncServer(cors_allowed_origins="*", async_mode="asgi")
 app = socketio.ASGIApp(sio)
 
-from chatbot.services.chatbot_core import process_text_message
+# Instantiate the chatbot
+chatbot = MultiLanguageBalSamagamChatbot()
 
-# ---------------------------
-# Load vosk model once globally
-# ---------------------------
-VOSK_MODEL_PATH = "/home/ashish/PP/bot/voice_chatbot/chatbot_project/vosk-model-small-en-us-0.15/vosk-model-small-en-us-0.15"
-model = Model(VOSK_MODEL_PATH)
+# Speech Recognition setup
+recognizer = sr.Recognizer()
 
-# Store a recognizer per client
-recognizers = {}  # sid -> KaldiRecognizer(16000)
+# Store audio buffers per client
+audio_buffers = {}  # sid -> bytearray
+
 
 @sio.event
 async def connect(sid, environ):
     print(f"Client {sid} connected")
-    recognizers[sid] = KaldiRecognizer(model, 16000)
+    audio_buffers[sid] = bytearray()
     await sio.emit("server_info", {"msg": "connected", "sample_rate": 16000}, to=sid)
+
 
 @sio.event
 async def disconnect(sid):
     print(f"Client {sid} disconnected")
-    recognizers.pop(sid, None)
+    audio_buffers.pop(sid, None)
+
 
 @sio.on("message")
 async def handle_message(sid, data):
     """
-    Optional: plain text message → TTS echo reply
+    Handle plain text messages from client.
     """
     user_text = (data or {}).get("text", "")
     if not user_text:
         return
-    result = await process_text_message(user_text)
+    # Use chatbot.chat (sync) before process_text_message (async)
+    response = chatbot.chat(sid, user_text)
+    result = await process_text_message(response, sid)
     await sio.emit("bot_reply", result, to=sid)
+
 
 @sio.on("voice_chunk")
 async def handle_voice_chunk(sid, data):
     """
-    Receive a *single* utterance as raw PCM16 bytes @16k from frontend.
-    We call FinalResult() to flush stable text for this chunk,
-    then synthesize TTS and push back to the client.
+    Receive raw PCM16 audio (from ArrayBuffer) and buffer it.
     """
-    if sid not in recognizers or not data:
+    if sid not in audio_buffers or data is None:
         return
 
-    rec = recognizers[sid]
+    # Case 1: frontend sent ArrayBuffer → arrives as list[int]
+    if isinstance(data, list):
+        try:
+            data = bytes(bytearray(data))
+        except Exception:
+            return
 
-    # Data should be raw bytes (ArrayBuffer from frontend)
-    if not isinstance(data, (bytes, bytearray)):
-        # If you see dict with {_placeholder: true, num: 0}, your frontend
-        # is not sending ArrayBuffer directly. Fix frontend.
+    # Case 2: base64 string
+    elif isinstance(data, str):
+        try:
+            data = base64.b64decode(data)
+        except Exception:
+            return
+
+    # Case 3: already bytes
+    elif not isinstance(data, (bytes, bytearray)):
         return
 
-    # Feed the chunk and flush
+    audio_buffers[sid].extend(data)
+
+
+@sio.on("end_voice")
+async def handle_end_voice(sid):
+    """
+    Finalize STT using speech_recognition (Google Web Speech API).
+    """
+    if sid not in audio_buffers:
+        return
+
+    audio_data = audio_buffers[sid]
+    audio_buffers[sid] = bytearray()  # reset buffer
+
+    if not audio_data:
+        await sio.emit("partial_text", {"text": ""}, to=sid)
+        return
+
     try:
-        rec.AcceptWaveform(data)   # feed
-        result_json = rec.FinalResult()  # flush the chunk
-        result = json.loads(result_json or "{}")
-        text = (result.get("text") or "").strip()
-        if text:
+        # Save audio temporarily as WAV (16k mono PCM16)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
+            with wave.open(tmpfile, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # PCM16 = 2 bytes
+                wf.setframerate(16000)
+                wf.writeframes(audio_data)
+            tmp_path = tmpfile.name
+
+        # Recognize speech
+        with sr.AudioFile(tmp_path) as source:
+            audio = recognizer.record(source)
+
+        try:
+            text = recognizer.recognize_google(audio)
+        except sr.UnknownValueError:
+            text = "[Unrecognized Speech]"
+        except sr.RequestError:
+            text = "[STT Service Error]"
+
+        if text and not text.startswith("["):
             print(f"[User {sid}]: {text}")
-            bot_result = await process_text_message(text)
+            
+            # here ---------------------------------------------------------------------------------------------------------
+            response = chatbot.chat(sid, text)
+            bot_result = await process_text_message(response, sid)
             await sio.emit("bot_reply", bot_result, to=sid)
         else:
-            await sio.emit("partial_text", {"text": ""}, to=sid)
+            await sio.emit("partial_text", {"text": text}, to=sid)
+
     except Exception as e:
         await sio.emit("server_info", {"error": f"STT error: {e}"}, to=sid)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
