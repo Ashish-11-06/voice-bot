@@ -37,7 +37,7 @@ def transcribe_pcm16_audio(audio_data: bytes, sample_rate: int = 16000) -> str:
         try:
             text = recognizer.recognize_google(audio)
         except sr.UnknownValueError:
-            text = "Ah, I didn't catch that! Could you repeat?"
+            text = "[Unrecognized Speech]"
         except sr.RequestError:
             text = "[STT Service Error]"
 
