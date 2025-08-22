@@ -48,6 +48,9 @@ async def handle_message(sid, data):
     user_text = (data or {}).get("text", "")
     if not user_text:
         return
+    
+    await sio.emit("bot_thinking", {"status": "thinking"}, to=sid)
+    
     # Use chatbot.chat (sync) before process_text_message (async)
     response = chatbot.chat(sid, user_text)
     result = await process_text_message(response, sid)
@@ -98,20 +101,10 @@ async def handle_end_voice(sid):
 
     if text and not text.startswith("["):
         print(f"[User {sid}]: {text}")
+        await sio.emit("bot_thinking", {"status": "thinking", "user_text": text}, to=sid)
         response = chatbot.chat(sid, text)
         bot_result = await process_text_message(response, sid)
         await sio.emit("bot_reply", bot_result, to=sid)
     else:
         await sio.emit("partial_text", {"text": text}, to=sid)
         
-        
-# if text and (not text.startswith("[") or not text.startswith("{")):
-#         print(f"[User {sid}]: {text}")
-#         response = chatbot.chat(sid, text)
-#         bot_result = await process_text_message(response, sid)
-#         await sio.emit("bot_reply", bot_result, to=sid)
-#     elif text and text.startswith("{"):
-#         bot_result = json.loads(text)
-#         await sio.emit("bot_reply", bot_result, to=sid)
-#     else:
-#         await sio.emit("partial_text", {"text": text}, to=sid)

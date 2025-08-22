@@ -2,14 +2,33 @@ import requests
 import json
 import os
 import random
+import redis
 import re
 from datetime import datetime
 
 class MultiLanguageBalSamagamChatbot:
     def __init__(self):
+        self.redis_client = redis.Redis(
+            host=os.getenv('REDIS_HOST', 'localhost'),
+            port=int(os.getenv('REDIS_PORT', 6379)),
+            db=0,
+            decode_responses=True  # store strings, not bytes
+        )
+        
         # Mistral API configuration
-        self.mistral_api_key = os.getenv('MISTRAL_API_KEY', 'LY1MwjaPpQnvApjHW0p7pgexEHvhK9Ew')
+        api_keys_env = os.getenv('MISTRAL_API_KEYS') or os.getenv('MISTRAL_API_KEY')
+        if api_keys_env:
+            self.mistral_api_keys = [k.strip() for k in api_keys_env.split(',') if k.strip()]
+        else:
+            self.mistral_api_keys = [
+                "3OyOnjAypy79EewldzfcBczW01mET0fM",
+                "tZKRscT6hDUurE5B7ex5j657ZZQDQw3P",
+                "dvXrS6kbeYxqBGXR35WzM0zMs4Nrbco2",
+                "5jMPffjLAwLyyuj6ZwFHhbLZxb2TyfUR",
+                "LY1MwjaPpQnvApjHW0p7pgexEHvhK9Ew"
+            ]
         self.mistral_api_url = "https://api.mistral.ai/v1/chat/completions"
+        self._api_key_index = 0
         
         self.auto_detect = False
         
@@ -210,7 +229,8 @@ class MultiLanguageBalSamagamChatbot:
             RESPOND IN ENGLISH ONLY.
             
             PERSONALITY:
-            - Always start with "Dhan Nirankar Ji! 🙏"
+            - For greetings/farewells (hi, hello, good morning, bye, good night, dhan nirankar, etc.), always start with "Dhan Nirankar Ji! 🙏"
+            - Otherwise, respond normally without it
             - Super friendly, like a big brother/sister
             - Use simple English words for 5-12 year olds
             - Keep answers short and fun (2-3 sentences)
@@ -298,37 +318,45 @@ class MultiLanguageBalSamagamChatbot:
         return prompts.get(language, prompts['en'])
     
     def call_mistral_api(self, user_message, language, conversation_history=[]):
-        """Call Mistral API with language-specific context"""
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.mistral_api_key}"
-        }
-        
+        """Call Mistral API with language-specific context, rotating API keys if one fails/hits limit."""
         messages = [{"role": "system", "content": self.get_system_prompt(language)}]
-        
         # Add conversation history
         for msg in conversation_history[-6:]:
             messages.append(msg)
-        
         messages.append({"role": "user", "content": user_message})
-        
         payload = {
             "model": "mistral-medium",
             "messages": messages,
             "max_tokens": 300,
             "temperature": 0.8
         }
-        
-        try:
-            response = requests.post(self.mistral_api_url, headers=headers, json=payload, timeout=30)
-            response.raise_for_status()
-            
-            result = response.json()
-            return result['choices'][0]['message']['content']
-            
-        except Exception as e:
-            print(f"API Error: {e}")
-            return self.get_fallback_response(user_message, language)
+
+        last_error = None
+        for i in range(len(self.mistral_api_keys)):
+            api_key = self.mistral_api_keys[self._api_key_index]
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            }
+            try:
+                response = requests.post(self.mistral_api_url, headers=headers, json=payload, timeout=30)
+                if response.status_code == 429 or response.status_code == 403:
+                    # Rate limit or forbidden, try next key
+                    print(f"API key {self._api_key_index+1} hit limit or forbidden, rotating to next key...")
+                    self._api_key_index = (self._api_key_index + 1) % len(self.mistral_api_keys)
+                    last_error = f"HTTP {response.status_code}: {response.text}"
+                    continue
+                response.raise_for_status()
+                result = response.json()
+                return result['choices'][0]['message']['content']
+            except Exception as e:
+                print(f"API Error with key {self._api_key_index+1}: {e}")
+                self._api_key_index = (self._api_key_index + 1) % len(self.mistral_api_keys)
+                last_error = str(e)
+                continue
+        # If all keys fail, fallback
+        print(f"All API keys failed. Last error: {last_error}")
+        return self.get_fallback_response(user_message, language)
     
     def get_fallback_response(self, user_message, language):
         """Language-specific fallback responses"""
@@ -405,15 +433,21 @@ class MultiLanguageBalSamagamChatbot:
             json.dump(self.all_sessions, f, ensure_ascii=False, indent=2)
 
     def get_user_history(self, user_id):
-        """Get history for one user."""
-        return self.all_sessions.get(user_id, [])
+        """Get conversation history for one user from Redis"""
+        history_json = self.redis_client.get(f"session:{user_id}")
+        if history_json:
+            return json.loads(history_json)
+        return []
+
 
     def update_user_history(self, user_id, role, content):
-        """Add new message to user's history and save."""
-        if user_id not in self.all_sessions:
-            self.all_sessions[user_id] = []
-        self.all_sessions[user_id].append({"role": role, "content": content})
-        self._save_all_sessions()
+        """Add a message to user's history in Redis"""
+        history = self.get_user_history(user_id)
+        history.append({"role": role, "content": content})
+        
+        # Save back to Redis with TTL of 24 hours
+        self.redis_client.set(f"session:{user_id}", json.dumps(history), ex=86400)
+
         
     def load_history(self):
         """Load all chat histories (for backward compatibility)."""
@@ -426,31 +460,19 @@ class MultiLanguageBalSamagamChatbot:
 
         # ---------- Chat Function ----------
     def chat(self, session_id: str, user_message: str) -> str:
-        """
-        Handles a chat message for a given session (sid).
-        Keeps track of history per user/session inside one JSON file.
-        """
-        history = self.load_history()
-
-        # Ensure session exists
-        if session_id not in history:
-            history[session_id] = []
-
-        # Append user message
-        history[session_id].append({"role": "user", "content": user_message})
-
-        # Add user message to persistent history
+        """Handles a chat message for a given session (sid)"""
+        
+        # Append user message to Redis history
         self.update_user_history(session_id, "user", user_message)
 
-        # Detect language if auto-detect is enabled
+        # Auto-detect language if enabled
         if self.auto_detect:
             self.current_language = self.detect_language(user_message)
 
-        # Get conversation history (last 6 turns max)
-        conversation_history = self.get_user_history(session_id)
+        # Get last 6 messages for context
+        conversation_history = self.get_user_history(session_id)[-6:]
         
-
-        # Call Mistral API via helper function
+        # Call Mistral API
         try:
             bot_reply = self.call_mistral_api(
                 user_message,
@@ -465,6 +487,3 @@ class MultiLanguageBalSamagamChatbot:
         self.update_user_history(session_id, "assistant", bot_reply)
 
         return bot_reply
-
-    
- 

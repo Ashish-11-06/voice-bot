@@ -4,22 +4,21 @@ import wave
 import tempfile
 import os
 import speech_recognition as sr
-import time  # <-- added
+import time
+import re
 
 recognizer = sr.Recognizer()
-
 
 def transcribe_pcm16_audio(audio_data: bytes, sample_rate: int = 16000) -> str:
     """
     Convert raw PCM16 audio bytes to text using Google Web Speech API.
     Returns recognized text or error message.
-    Also prints the time taken for conversion.
     """
     if not audio_data:
         return ""
 
     tmp_path = None
-    start_time = time.time()  # start timer
+    start_time = time.time()
     try:
         # Save audio temporarily as WAV (16k mono PCM16)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
@@ -36,19 +35,26 @@ def transcribe_pcm16_audio(audio_data: bytes, sample_rate: int = 16000) -> str:
 
         try:
             text = recognizer.recognize_google(audio)
-        except sr.UnknownValueError:
-            text = "[Unrecognized Speech]"
-        except sr.RequestError:
-            text = "[STT Service Error]"
 
-        return text
+            # Check if text has any alphabetic letters
+            if not text.strip():
+                return "[Heard Noise]"  # empty text
+            elif not re.search(r'[a-zA-Z]', text):
+                return "[Unrecognized Speech]"  # some sound detected but cannot recognize
+            return text
+
+        except sr.UnknownValueError:
+            return "[Unrecognized Speech]"
+        except sr.RequestError:
+            return "[STT Service Error]"
 
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
-        end_time = time.time()  # end timer
+        end_time = time.time()
         print(f"[STT] Time taken: {end_time - start_time:.3f} seconds")
-
+        
+        
 
 class STTSession:
     def __init__(self):
