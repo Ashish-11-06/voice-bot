@@ -10,6 +10,7 @@ import wave
 from chatbot.services.chatbot_core import process_text_message
 from .Kids_bot import MultiLanguageBalSamagamChatbot
 from chatbot.services.stt_service import transcribe_pcm16_audio
+from .blood_donation import BloodDonationChatbot
 
 # Django setup
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "chatbot_project.settings")
@@ -21,7 +22,9 @@ sio = socketio.AsyncServer(cors_allowed_origins="*", async_mode="asgi")
 app = socketio.ASGIApp(sio)
 
 # Instantiate the chatbot
-chatbot = MultiLanguageBalSamagamChatbot()
+# chatbot = MultiLanguageBalSamagamChatbot()
+chatbot = BloodDonationChatbot()
+# blood_donation_chatbot = BloodDonationChatbot()
 
 # Store audio buffers per client
 audio_buffers = {}  # sid -> bytearray
