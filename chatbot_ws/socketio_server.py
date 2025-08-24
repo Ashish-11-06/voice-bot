@@ -19,7 +19,7 @@ django.setup()
 
 # Socket.IO ASGI app
 sio = socketio.AsyncServer(cors_allowed_origins="*", async_mode="asgi")
-app = socketio.ASGIApp(sio)
+app = socketio.ASGIApp(sio, socketio_path="b-d-bot/socket.io")
 
 # Instantiate the chatbot
 # chatbot = MultiLanguageBalSamagamChatbot()
