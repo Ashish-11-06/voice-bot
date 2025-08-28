@@ -1,89 +1,75 @@
 import base64
-import io
 import time
-from gtts import gTTS
-import boto3
-from pydub import AudioSegment
+import os
+import requests
 import emoji
+import logging
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 def clean_text(text: str) -> str:
     """
     Remove emojis and asterisks from the text.
     """
+    if not text:
+        return ""
+        
     text = emoji.replace_emoji(text, replace='')  # remove emojis
     text = text.replace('*', '')  # remove asterisks
-    return text
+    return text.strip()
 
-async def generate_voice_response(text: str) -> str:
+async def generate_voice_response(text: str, sid: str = "", voice: str = "onyx", model: str = "tts-1") -> str:
     """
-    gTTS -> MP3 (memory) -> WAV (PCM16 mono 16kHz) -> base64
-    Emoji characters and asterisks are removed before TTS.
-    Prints the time taken for conversion.
+    Generate voice using OpenAI TTS API. Returns base64-encoded WAV audio.
     """
-    start_time = time.time()  # start timer
-
+    if not text:
+        logger.warning(f"Empty text for TTS for {sid}")
+        return ""
+        
+    start_time = time.time()
     cleaned_text = clean_text(text)
     
-    mp3_fp = io.BytesIO()
-    tts = gTTS(text=cleaned_text, lang="en")
-    tts.write_to_fp(mp3_fp)
-    mp3_fp.seek(0)
+    if not cleaned_text:
+        logger.warning(f"Text empty after cleaning for {sid}")
+        return ""
+        
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        logger.error("OPENAI_API_KEY not set in environment")
+        return ""
 
-    audio = AudioSegment.from_file(mp3_fp, format="mp3")
-    audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+    try:
+        url = "https://api.openai.com/v1/audio/speech"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+        }
+        payload = {
+            "model": model,
+            "input": cleaned_text,
+            "voice": voice,
+            "response_format": "wav"
+        }
+        
+        # Set timeout and make request
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        
+        if response.status_code != 200:
+            logger.error(f"OpenAI TTS failed: {response.status_code} - {response.text}")
+            return ""
 
-    wav_fp = io.BytesIO()
-    audio.export(wav_fp, format="wav")
-    wav_fp.seek(0)
-
-    end_time = time.time()  # end timer
-    print(f"[TTS] Time taken: {end_time - start_time:.3f} seconds")
-
-    return base64.b64encode(wav_fp.read()).decode("utf-8")
-
-
-# ------------------ Amazon Polly Setup ------------------
-AWS_ACCESS_KEY = "AKIAZI2LCCJBIABTVG4K"
-AWS_SECRET_KEY = "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"
-AWS_REGION = "us-west-2"  # change as needed
-
-polly_client = boto3.Session(
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY,
-    region_name=AWS_REGION
-).client('polly')
-
-
-async def generate_voice_response_by_poly(text: str, voice: str = "Kajal", engine: str = "neural") -> str:
-    """
-    Generate voice using Amazon Polly -> PCM16 mono 16kHz WAV -> base64
-    Removes emojis and asterisks before sending text to Polly.
-    Prints the time taken for conversion.
-    """
-    start_time = time.time()
-
-    cleaned_text = clean_text(text)
-
-    # Call Polly
-    response = polly_client.synthesize_speech(
-        Text=cleaned_text,
-        OutputFormat='mp3',  # get mp3 first
-        VoiceId=voice,
-        Engine=engine
-    )
-
-    mp3_fp = io.BytesIO(response['AudioStream'].read())
-    mp3_fp.seek(0)
-
-    # Convert to WAV 16kHz mono
-    audio = AudioSegment.from_file(mp3_fp, format="mp3")
-    audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
-
-    wav_fp = io.BytesIO()
-    audio.export(wav_fp, format="wav")
-    wav_fp.seek(0)
-
-    end_time = time.time()
-    print(f"[Polly TTS] Time taken: {end_time - start_time:.3f} seconds")
-
-    return base64.b64encode(wav_fp.read()).decode("utf-8")
+        wav_bytes = response.content
+        end_time = time.time()
+        
+        logger.debug(f"TTS for {sid} took {end_time - start_time:.3f} seconds, text: '{cleaned_text[:50]}...'")
+        return base64.b64encode(wav_bytes).decode("utf-8")
+        
+    except requests.exceptions.Timeout:
+        logger.error(f"TTS request timed out for {sid}")
+        return ""
+    except requests.exceptions.RequestException as e:
+        logger.error(f"TTS request failed for {sid}: {e}")
+        return ""
+    except Exception as e:
+        logger.error(f"Unexpected error in TTS for {sid}: {e}")
+        return ""

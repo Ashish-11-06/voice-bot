@@ -1,45 +1,80 @@
-# chatbot_ws/stt_service.py
-import base64
-import wave
-import tempfile
 import os
-import speech_recognition as sr
+import requests
+import io
+import wave
+import time
+import logging
 
-recognizer = sr.Recognizer()
+logger = logging.getLogger(__name__)
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 
-def transcribe_pcm16_audio(audio_data: bytes, sample_rate: int = 16000) -> str:
+def transcribe_pcm16_audio(
+    audio_data: bytes,
+    sample_rate: int = 16000,
+    model: str = "gpt-4o-mini-transcribe",
+    retries: int = 2,
+    timeout: int = 30
+) -> str:
     """
-    Convert raw PCM16 audio bytes to text using Google Web Speech API.
-    Returns recognized text or error message.
+    Convert raw PCM16 audio bytes to text using OpenAI STT API.
     """
     if not audio_data:
+        logger.warning("Empty audio data for transcription")
         return ""
 
-    tmp_path = None
+    if not OPENAI_API_KEY:
+        logger.error("OPENAI_API_KEY not set in environment")
+        return "[STT Error] API key not configured"
+
     try:
-        # Save audio temporarily as WAV (16k mono PCM16)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
-            with wave.open(tmpfile, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)  # PCM16 = 2 bytes
-                wf.setframerate(sample_rate)
-                wf.writeframes(audio_data)
-            tmp_path = tmpfile.name
+        # Write PCM16 into an in-memory WAV
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # PCM16 = 2 bytes
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio_data)
+        buffer.seek(0)
 
-        # Recognize speech
-        with sr.AudioFile(tmp_path) as source:
-            audio = recognizer.record(source)
+        url = "https://api.openai.com/v1/audio/transcriptions"
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        files = {"file": ("audio.wav", buffer, "audio/wav")}
+        data = {"model": model, "response_format": "json"}
 
-        try:
-            text = recognizer.recognize_google(audio)
-        except sr.UnknownValueError:
-            text = "[Unrecognized Speech]"
-        except sr.RequestError:
-            text = "[STT Service Error]"
+        for attempt in range(retries + 1):
+            try:
+                resp = requests.post(url, headers=headers, files=files, data=data, timeout=timeout)
+                
+                if resp.status_code == 200:
+                    result = resp.json().get("text", "")
+                    logger.debug(f"STT successful: {result}")
+                    return result
+                else:
+                    err = resp.json().get("error", {}).get("message", resp.text)
+                    logger.warning(f"STT attempt {attempt+1} failed: {resp.status_code} - {err}")
+                    
+                    if attempt < retries:
+                        time.sleep(1)  # backoff
+                        continue
+                    
+                    return f"[STT Error {resp.status_code}] {err}"
+                    
+            except requests.exceptions.Timeout:
+                logger.warning(f"STT attempt {attempt+1} timed out")
+                if attempt < retries:
+                    continue
+                return "[STT Error] Request timed out"
+                
+            except Exception as e:
+                logger.error(f"STT attempt {attempt+1} exception: {e}")
+                if attempt < retries:
+                    time.sleep(1)
+                    continue
+                return f"[STT Exception] {str(e)}"
 
-        return text
-
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        return ""  # fallback
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in STT: {e}")
+        return f"[STT Error] {str(e)}"
