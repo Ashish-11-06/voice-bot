@@ -22,8 +22,8 @@ sio = socketio.AsyncServer(cors_allowed_origins="*", async_mode="asgi")
 app = socketio.ASGIApp(sio)
 
 # Instantiate the chatbot
-# chatbot = MultiLanguageBalSamagamChatbot()
-chatbot = BloodDonationChatbot()
+chatbot = MultiLanguageBalSamagamChatbot()
+# chatbot = BloodDonationChatbot()
 # blood_donation_chatbot = BloodDonationChatbot()
 
 # Store audio buffers per client
