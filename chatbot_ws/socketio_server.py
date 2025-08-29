@@ -240,7 +240,7 @@ async def handle_end_voice(sid):
         
         # Send response
         await sio.emit("bot_reply", {
-            "user_text": text,
+            # "user_text": text,
             "bot_text": response,
             "bot_audio": bot_audio
         }, to=sid)

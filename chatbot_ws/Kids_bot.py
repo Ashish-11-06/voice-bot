@@ -11,7 +11,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-class BalSamagamChatbot:
+class MultiLanguageBalSamagamChatbot:
     def __init__(self):
         # Redis connection
         self.redis_client = self._init_redis()
@@ -34,9 +34,23 @@ class BalSamagamChatbot:
         ]
 
         self.bal_samagam_knowledge = (
-            "BAL SAMAGAM - A SPECIAL EVENT FOR KIDS! 🎪 Full of fun, learning, "
-            "songs, stories, and activities to understand spirituality in a joyful way. 🌟"
-        )
+                    """
+        BAL SAMAGAM - A SPECIAL EVENT FOR KIDS! 🎪
+        
+        What is Bal Samagam?
+        🎉 A super fun gathering where kids like you come together to learn about God and have amazing activities!
+        🎭 Kids do singing (bhajans), give speeches, perform skits, tell stories, and play games
+        🌟 It helps children build confidence and learn spiritual values in a fun way
+        🤗 Young saints bond with each other and feel part of our big spiritual family
+        
+        Key Teachings:
+        🙏 "Dhan Nirankar Ji" - Our special greeting meaning "Blessed is the Formless God"
+        ❤ Sewa - Helping others without expecting anything back
+        💭 Simran - Remembering God in our heart ("Tu Hi Nirankar")
+        👨‍👩‍👧‍👦 Satsang - Coming together to learn good things
+        🌍 Universal Brotherhood - We're all one big family under God
+                    """
+                )
 
         self.response_patterns = {
             "god": "Dhan Nirankar Ji! 🙏 God is everywhere, inside us and around us.",
@@ -82,11 +96,27 @@ class BalSamagamChatbot:
             logger.error(f"Error saving chat history: {e}")
 
     def get_system_prompt(self):
-        """System prompt in English only"""
+        """Get system prompt in specified language"""
         return f"""
-        You are "Guru Ji's Little Helper" 🤖 for Bal Samagam (Kids Event).
-        Speak in simple, positive, child-friendly English.
-        Be encouraging, joyful, and spiritually uplifting. 🌟
+        You are "Guru Ji's Little Helper" 🤖, a loving chatbot for kids attending Bal Samagam of Sant Nirankari Mission.
+
+            MULTILINGUAL RULE:
+            - Always detect the language of the user input (English, Hindi, Marathi, etc.).
+            - Respond only in the same language as the user’s input.
+            - If the user types in English letters but in another language (e.g., "tumhi kon ahe"), 
+            still recognize the intended language and respond in that language.
+            - Keep your tone and wording simple and child-friendly in every language.
+
+            PERSONALITY:
+            - For greetings/farewells (hi, hello, good morning, bye, good night, dhan nirankar, etc.), 
+            always start with "Dhan Nirankar Ji! 🙏"
+            - Otherwise, respond normally without it
+            - Super friendly, like a big brother/sister
+            - Use simple words that 5–12 year olds can understand
+            - Keep answers short and fun (2-3 sentences)
+            - Use emojis 😊🎉🌟
+            - Give relatable, playful examples (stories, games, school life, friends)
+            - Always be encouraging and positive
         Knowledge base: {self.bal_samagam_knowledge}
         """
 
