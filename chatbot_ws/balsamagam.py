@@ -1,10 +1,13 @@
 import requests
 import json
 import os
+from dotenv import load_dotenv
 import random
 import redis
 import re
 from datetime import datetime
+
+load_dotenv()  
 
 from openai import OpenAI  
 
