@@ -12,6 +12,7 @@ import speech_recognition as sr
 from chatbot.services.chatbot_core import process_text_message
 from .Kids_bot import MultiLanguageBalSamagamChatbot
 from .blood_donation import BloodDonationChatbot
+from .balsamagam import BalSamagamChatbot
 
 # Django setup
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "chatbot_project.settings")
@@ -22,8 +23,9 @@ sio = socketio.AsyncServer(cors_allowed_origins="*", async_mode="asgi")
 app = socketio.ASGIApp(sio, socketio_path="/socket.io")
 
 # Instantiate the chatbot
-chatbot = MultiLanguageBalSamagamChatbot()
+# chatbot = MultiLanguageBalSamagamChatbot()
 # chatbot = BloodDonationChatbot()
+chatbot = BalSamagamChatbot()
 
 # Store audio buffers per client: {"full": bytearray, "chunk": bytearray}
 audio_buffers = {}
