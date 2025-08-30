@@ -25,7 +25,8 @@ class MultiLanguageBalSamagamChatbot:
                 "tZKRscT6hDUurE5B7ex5j657ZZQDQw3P",
                 "dvXrS6kbeYxqBGXR35WzM0zMs4Nrbco2",
                 "5jMPffjLAwLyyuj6ZwFHhbLZxb2TyfUR",
-                "LY1MwjaPpQnvApjHW0p7pgexEHvhK9Ew"
+                "LY1MwjaPpQnvApjHW0p7pgexEHvhK9Ew",
+                "CyVJTYRSxS7yjBWWLaeQ7ch4gfK5Ckkt"
             ]
         self.mistral_api_url = "https://api.mistral.ai/v1/chat/completions"
         self._api_key_index = 0

@@ -1,3 +1,4 @@
+
 import requests
 import json
 import os
@@ -6,12 +7,23 @@ import random
 import redis
 import re
 from datetime import datetime
+import numpy as np
 
 load_dotenv()  
 
 from openai import OpenAI  
 
 class BalSamagamChatbot:
+    def _load_doc_qa_pairs(self):
+        """Load Q&A pairs and their embeddings from doc_embeddings.json."""
+        doc_path = os.path.join(os.path.dirname(__file__), 'doc_embeddings.json')
+        if not os.path.exists(doc_path):
+            return []
+        with open(doc_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        # Each item: {"question": ..., "answer": ..., "embedding": [...]}
+        return data
+
     CHAT_HISTORY_FILE = "chat_history.json"
 
     def __init__(self):
@@ -29,6 +41,48 @@ class BalSamagamChatbot:
         
         self.history_file = self.CHAT_HISTORY_FILE
         self.all_sessions = self._load_all_sessions()
+
+        # Load Q&A pairs from doc_embeddings.json
+        self.qa_pairs = self._load_doc_qa_pairs()
+
+    def get_embedding(self, text):
+        """Get embedding for a text using OpenAI embedding API."""
+        try:
+            response = self.client.embeddings.create(
+                input=[text],
+                model="text-embedding-3-small"
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            print(f"Embedding API Error: {e}")
+            return None
+
+    def cosine_similarity(self, a, b):
+        a = np.array(a)
+        b = np.array(b)
+        if np.linalg.norm(a) == 0 or np.linalg.norm(b) == 0:
+            return 0.0
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+    def find_top_doc_matches(self, user_message, top_n=3):
+        """Return top N most similar Q&A pairs from doc_embeddings.json."""
+        if not self.qa_pairs:
+            return []
+        user_emb = self.get_embedding(user_message)
+        if user_emb is None:
+            return []
+        scored = []
+        for item in self.qa_pairs:
+            q_emb = item.get("embedding")
+            if not q_emb:
+                continue
+            score = self.cosine_similarity(user_emb, q_emb)
+            scored.append({"score": score, "question": item.get("question"), "answer": item.get("answer")})
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        print(f"[DEBUG] Top doc matches:")
+        for i, match in enumerate(scored[:top_n]):
+            print(f"  {i+1}. '{match['question']}' (score={match['score']:.3f})")
+        return scored[:top_n]
 
     def call_openai_api(self, user_message, conversation_history=[]):
         messages = [
@@ -170,19 +224,52 @@ class BalSamagamChatbot:
     # ---------- Chat Function ----------
     def chat(self, session_id: str, user_message: str) -> str:
         """Handles a chat message for a given session (sid)"""
-        # Append user message to Redis history
         self.update_user_history(session_id, "user", user_message)
-        # Get last 6 messages for context
-        conversation_history = self.get_user_history(session_id)[-6:]
-        # Call OpenAI API
-        try:
-            bot_reply = self.call_openai_api(
-                user_message,
-                conversation_history
+        top_matches = self.find_top_doc_matches(user_message, top_n=3)
+        # If best match is very high similarity, answer directly
+        if top_matches and top_matches[0]["score"] >= 0.85:
+            print("[INFO] Responding directly from doc_embeddings.json (high similarity)")
+            bot_reply = top_matches[0]["answer"]
+        else:
+            # Build RAG context from top matches
+            rag_context = "Use the following information to answer the user's question.\n"
+            for i, match in enumerate(top_matches):
+                rag_context += f"Q{i+1}: {match['question']}\nA{i+1}: {match['answer']}\n"
+            # Add system prompt with guardrails and personality
+            system_prompt = (
+                "You are 'Guru Ji's Little Helper' 🤖, a friendly female chatbot for kids at Bal Samagam (Sant Nirankari Mission).\n"
+                "Say you are designed for Bal Samagam and love helping kids!\n"
+                "Use 'Dhan Nirankar Ji! 🙏' only for greetings and farewells, not every response.\n"
+                "Address the user as 'Sant' or by their name if they share it.\n"
+                "Be caring, positive, and sound like a big sister.\n"
+                "Use emojis, short sentences, and playful examples.\n"
+                "Answer about Bal Samagam, Sant Nirankari Mission, spirituality, and general knowledge.\n"
+                "Use doc context if available, else use your own knowledge.\n"
+                "If you don't know, say 'Dhan Nirankar Ji! 🙏 That's a great question! Can you ask in another way?'\n"
+                "Never give medical, legal, or personal advice.\n"
+                "Keep answers safe, kind, and child-appropriate.\n"
+                "Add friendly fillers like 'Hmm...', 'Let me think...', 'Oh wow!', 'That's interesting!' to sound human."
             )
-        except Exception as e:
-            print(f"API Error: {e}")
-            bot_reply = self.get_fallback_response(user_message)
-        # Save bot reply
+            conversation_history = self.get_user_history(session_id)[-6:]
+            # Insert system prompt and RAG context as system messages
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": rag_context},
+            ]
+            for msg in conversation_history:
+                messages.append(msg)
+            messages.append({"role": "user", "content": user_message})
+            try:
+                response = self.client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages,
+                    max_tokens=300,
+                    temperature=0.8
+                )
+                bot_reply = response.choices[0].message.content
+                print("[INFO] Responding from OpenAI chat model with RAG context and system prompt")
+            except Exception as e:
+                print(f"API Error: {e}")
+                bot_reply = self.get_fallback_response(user_message)
         self.update_user_history(session_id, "assistant", bot_reply)
         return bot_reply
