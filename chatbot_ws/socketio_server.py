@@ -27,37 +27,13 @@ app = socketio.ASGIApp(sio)
 
 chatbot = MultiLanguageBalSamagamChatbot()
 audio_buffers = {}
-last_user_messages = {}
-
-def is_invalid_user_text(text: str) -> bool:
-    """Check if text is invalid user input or system error"""
-    if not text or text.strip() == "":
-        return True
-        
-    invalid_patterns = [
-        r"^\[STT (Error|Exception)",
-        r"^\[Unrecognized Speech\]",
-        r"^(AWAB|UklG|SUQz|T2dn)",
-        r"rate.*limit.*reached",
-        r"please.*try.*again",
-        r"visit.*http",
-        r"organization.*org-",
-        r"^Dhan Nirankar Ji!",
-        r"great question"
-    ]
-    
-    for pattern in invalid_patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            logger.warning(f"Filtered out invalid text: {text[:100]}...")
-            return True
-    return False
 
 @sio.event
 async def connect(sid, environ):
     """Handle client connection"""
     print("connected")
     audio_buffers[sid] = bytearray()
-    last_user_messages[sid] = ""
+    # last_user_messages[sid] = ""
     await sio.emit("server_info", {
         "msg": "connected", 
         "sample_rate": 16000,
@@ -69,48 +45,29 @@ async def disconnect(sid):
     """Handle client disconnection"""
     logger.info(f"Client {sid} disconnected")
     audio_buffers.pop(sid, None)
-    last_user_messages.pop(sid, None)
 
-@sio.on("message")
-async def handle_message(sid, data):
-    """Handle text messages from client"""
-    try:
-        user_text = (data or {}).get("text", "").strip()
+# @sio.on("message")
+# async def handle_message(sid, data):
+#     """Handle text messages from client"""
+#     try:
+#         user_text = (data or {}).get("text", "").strip()
+#         await sio.emit("bot_thinking", {"status": "thinking"}, to=sid)
         
-        if is_invalid_user_text(user_text):
-            await sio.emit("message_ignored", {
-                "reason": "system_message", 
-                "original_text": user_text[:100]
-            }, to=sid)
-            return
-            
-        if sid in last_user_messages and user_text == last_user_messages[sid]:
-            await sio.emit("message_ignored", {
-                "reason": "duplicate", 
-                "original_text": user_text[:100]
-            }, to=sid)
-            return
-            
-        last_user_messages[sid] = user_text
-        logger.info(f"Valid text message from {sid}: {user_text}")
+#         # Process message
+#         chatbot_response = chatbot.chat(sid, user_text)
+#         processed_result = await process_text_message(chatbot_response, sid)
         
-        await sio.emit("bot_thinking", {"status": "thinking"}, to=sid)
+#         bot_text = processed_result.get("text", chatbot_response)
+#         bot_audio = processed_result.get("audio") or await generate_voice_response(bot_text, sid)
         
-        # Process message
-        chatbot_response = chatbot.chat(sid, user_text)
-        processed_result = await process_text_message(chatbot_response, sid)
+#         await sio.emit("bot_reply", {
+#             "bot_text": bot_text,
+#             "bot_audio": bot_audio
+#         }, to=sid)
         
-        bot_text = processed_result.get("text", chatbot_response)
-        bot_audio = processed_result.get("audio") or await generate_voice_response(bot_text, sid)
-        
-        await sio.emit("bot_reply", {
-            "bot_text": bot_text,
-            "bot_audio": bot_audio
-        }, to=sid)
-        
-    except Exception as e:
-        logger.error(f"Error handling text message: {e}")
-        await sio.emit("error", {"message": "Failed to process message"}, to=sid)
+#     except Exception as e:
+#         logger.error(f"Error handling text message: {e}")
+#         await sio.emit("error", {"message": "Failed to process message"}, to=sid)
 
 @sio.on("voice_chunk")
 async def handle_voice_chunk(sid, data):
@@ -147,22 +104,20 @@ async def handle_end_voice(sid):
         audio_buffers[sid] = bytearray()
         
 
-        # Transcribe audio
-        text = transcribe_pcm16_audio(audio_data)
+
+        # Transcribe audio and get which model was used
+        text, stt_model = transcribe_pcm16_audio(audio_data)
+
+        # Print and emit the recognized text (message to the model) and which STT model was used
+        print(f"Message to model: {text} (STT model: {stt_model})")
+        await sio.emit("message_to_model", {"text": text, "stt_model": stt_model}, to=sid)
 
         # If both STT fail, text will be empty or an error string, do not proceed
-        if not text or text.strip() == "" or is_invalid_user_text(text):
+        if not text or text.strip() == "" or text in ["[Unrecognized Speech]", "[STT Service Error]", "[STT Error] API key not configured"]:
             await sio.emit("partial_text", {"text": text if text else "[Unrecognized Speech]"}, to=sid)
             await sio.emit("error", {"message": "Speech recognition failed. Please try again."}, to=sid)
+            print(f"[STT DEBUG] Not passing to model. Reason: {text}")
             return
-
-        if sid in last_user_messages and text == last_user_messages[sid]:
-            await sio.emit("partial_text", {"text": text}, to=sid)
-            await sio.emit("message_ignored", {"reason": "duplicate", "original_text": text[:100]}, to=sid)
-            return
-
-        last_user_messages[sid] = text
-        logger.info(f"User {sid} said: {text}")
 
         await sio.emit("partial_text", {"text": text}, to=sid)
         await sio.emit("bot_thinking", {"status": "thinking", "user_text": text}, to=sid)

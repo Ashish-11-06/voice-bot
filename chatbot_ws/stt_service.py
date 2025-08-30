@@ -6,6 +6,8 @@ import time
 import logging
 import tempfile
 import speech_recognition as sr
+import re
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,7 @@ def transcribe_pcm16_audio(
         logger.warning("Empty audio data for transcription")
         return ""
 
+    print(f"[STT DEBUG] Raw audio length: {len(audio_data)} bytes")
     # First try OpenAI STT
     openai_result = _transcribe_with_openai(
         audio_data, sample_rate, model, retries, timeout
@@ -34,18 +37,22 @@ def transcribe_pcm16_audio(
 
     # Check if OpenAI returned an error that should trigger fallback
     if _should_fallback_to_google(openai_result):
+        print(f"[STT DEBUG] OpenAI STT failed, using Google STT. Reason: {openai_result}")
         logger.warning(f"OpenAI STT failed with: {openai_result}, trying Google STT...")
         # Use Google STT with silence/noise thresholding
         google_result = _transcribe_with_google_with_threshold(audio_data, sample_rate)
         if google_result and not _is_error_result(google_result):
+            print(f"[STT DEBUG] Used Google STT, result: {google_result}")
             logger.debug(f"Google STT successful: {google_result}")
-            return google_result
+            return google_result, 'google'
         else:
+            print(f"[STT DEBUG] Google STT also failed: {google_result}")
             logger.warning(f"Google STT also failed: {google_result}")
-            return google_result  # Return Google's error message
+            return google_result, 'google'  # Return Google's error message
 
     # If OpenAI succeeded or returned a non-fallback error, return its result
-    return openai_result
+    print(f"[STT DEBUG] Used OpenAI STT, result: {openai_result}")
+    return openai_result, 'openai'
 
 
 def _transcribe_with_google_with_threshold(audio_data: bytes, sample_rate: int) -> str:
@@ -63,10 +70,11 @@ def _transcribe_with_google_with_threshold(audio_data: bytes, sample_rate: int) 
 
         # Recognize speech with silence/noise thresholding
         with sr.AudioFile(tmp_path) as source:
-            # Set thresholds for silence and noise
-            recognizer.energy_threshold = 300  # adjust as needed (default 300)
-            recognizer.dynamic_energy_threshold = True  # let recognizer adapt to noise
+            recognizer.energy_threshold = 300  # ignore weak sounds
+            recognizer.dynamic_energy_threshold = True
+            recognizer.pause_threshold = 0.6   # must be at least 600ms of silence to stop recording
             audio = recognizer.record(source)
+
 
         try:
             text = recognizer.recognize_google(audio).strip()
@@ -129,21 +137,32 @@ def _transcribe_with_openai(
     retries: int,
     timeout: int
 ) -> str:
-    """Internal function for OpenAI STT transcription"""
+    """Internal function for OpenAI STT transcription with silence/noise trimming"""
     if not OPENAI_API_KEY:
         logger.error("OPENAI_API_KEY not set in environment")
         return "[STT Error] API key not configured"
 
     try:
-        # Write PCM16 into an in-memory WAV
-        buffer = io.BytesIO()
-        with wave.open(buffer, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)  # PCM16 = 2 bytes
-            wf.setframerate(sample_rate)
-            wf.writeframes(audio_data)
-        buffer.seek(0)
+        # --------- PREPROCESSING: Silence/Noise Filtering ----------
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
+            with wave.open(tmpfile, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # PCM16 = 2 bytes
+                wf.setframerate(sample_rate)
+                wf.writeframes(audio_data)
+            tmp_path = tmpfile.name
 
+        # Use SpeechRecognition to trim silence before sending to OpenAI
+        with sr.AudioFile(tmp_path) as source:
+            recognizer.energy_threshold = 300   # Ignore background noise
+            recognizer.dynamic_energy_threshold = True
+            recognizer.pause_threshold = 0.6    # 600ms silence = segment end
+            audio = recognizer.record(source)   # Load & auto-trim
+
+        processed_audio = audio.get_wav_data()
+
+        # --------- SEND TO OPENAI ----------
+        buffer = io.BytesIO(processed_audio)
         url = "https://api.openai.com/v1/audio/transcriptions"
         headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
         files = {"file": ("audio.wav", buffer, "audio/wav")}
@@ -161,8 +180,6 @@ def _transcribe_with_openai(
                 else:
                     err = resp.json().get("error", {}).get("message", resp.text)
                     logger.warning(f"OpenAI STT attempt {attempt+1} failed: {resp.status_code} - {err}")
-                    
-                    # Return the error message (will trigger fallback in main function)
                     return f"[STT Error {resp.status_code}] {err}"
                     
             except requests.exceptions.Timeout:
@@ -174,45 +191,10 @@ def _transcribe_with_openai(
                 return f"[STT Exception] {str(e)}"
 
         return "[STT Error] All attempts failed"
-        
+
     except Exception as e:
         logger.error(f"Unexpected error in OpenAI STT: {e}")
         return f"[STT Error] {str(e)}"
-
-def _transcribe_with_google(audio_data: bytes, sample_rate: int) -> str:
-    """Internal function for Google STT transcription"""
-    tmp_path = None
-    try:
-        # Save audio temporarily as WAV (16k mono PCM16)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
-            with wave.open(tmpfile, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)  # PCM16 = 2 bytes
-                wf.setframerate(sample_rate)
-                wf.writeframes(audio_data)
-            tmp_path = tmpfile.name
-
-        # Recognize speech
-        with sr.AudioFile(tmp_path) as source:
-            audio = recognizer.record(source)
-
-        try:
-            text = recognizer.recognize_google(audio).strip()
-            if not text:
-                return "[Unrecognized Speech]"
-            return text
-        except sr.UnknownValueError:
-            return "[Unrecognized Speech]"
-        except sr.RequestError as e:
-            logger.error(f"Google STT service error: {e}")
-            return "[STT Service Error]"
-        except Exception as e:
-            logger.error(f"Google STT unexpected error: {e}")
-            return "[STT Service Error]"
-
-    except Exception as e:
-        logger.error(f"Google STT processing error: {e}")
-        return "[STT Service Error]"
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
