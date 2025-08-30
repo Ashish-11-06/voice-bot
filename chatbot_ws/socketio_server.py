@@ -1,4 +1,3 @@
-# chatbot_ws/socketio_server.py
 import os
 import django
 import socketio
@@ -37,17 +36,12 @@ CHUNK_WINDOW_SIZE = 16000 * 2  # 1 second = 16000 samples * 2 bytes
 
 
 def transcribe_pcm16_audio(audio_data: bytes, sample_rate: int = 16000, partial: bool = False) -> str:
-    """
-    Convert raw PCM16 audio bytes to text using Google Web Speech API.
-    Returns recognized text or error message.
-    """
     if not audio_data:
         return ""
 
     tmp_path = None
     start_time = time.time()
     try:
-        # Save audio temporarily as WAV (16k mono PCM16)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
             with wave.open(tmpfile, "wb") as wf:
                 wf.setnchannels(1)
@@ -95,9 +89,6 @@ async def disconnect(sid):
 
 @sio.on("message")
 async def handle_message(sid, data):
-    """
-    Handle plain text messages from client.
-    """
     user_text = (data or {}).get("text", "")
     if not user_text:
         return
@@ -111,15 +102,9 @@ async def handle_message(sid, data):
 
 @sio.on("voice_chunk")
 async def handle_voice_chunk(sid, data):
-    """
-    Receive raw PCM16 audio (from ArrayBuffer) and buffer it.
-    Do partial transcription on rolling window (~1 sec).
-    Also emit robot signals immediately when detecting keywords.
-    """
     if sid not in audio_buffers or data is None:
         return
 
-    # Decode chunk
     if isinstance(data, list):
         try:
             data = bytes(bytearray(data))
@@ -133,59 +118,58 @@ async def handle_voice_chunk(sid, data):
     elif not isinstance(data, (bytes, bytearray)):
         return
 
-    # Append to full buffer
     audio_buffers[sid]["full"].extend(data)
 
-    # Append to rolling chunk buffer
     buf = audio_buffers[sid]["chunk"]
     buf.extend(data)
 
-    # Keep only last 1 second in chunk buffer
     if len(buf) > CHUNK_WINDOW_SIZE:
         buf[:] = buf[-CHUNK_WINDOW_SIZE:]
 
-    # 🔑 Try partial transcription
-    if len(buf) > 10000:  # ~0.5 sec before attempting
+    if len(buf) > 10000:
         partial_text = transcribe_pcm16_audio(buf, partial=True)
         if partial_text:
             print(f"[Partial STT {sid}]: {partial_text}")
             await sio.emit("partial_text", {"text": partial_text}, to=sid)
 
-            # --- 🔑 Immediate Robot movement logic ---
-            lower_text = partial_text.lower()
+            # lower_text = partial_text.lower()
 
-            if any(word in lower_text for word in ["hello", "hey", "hii", "hi"]):
-                action = "shake_hand"
-            elif any(phrase in lower_text for phrase in [
-                "dhan nirankar ji",
-                "dhhan nirankar jii",
-                "dhaan nirankar ji"
-            ]):
-                action = "namste"
-            else:
-                action = "hand_movement"
+            # # --- ✅ Fixed Robot movement logic with regex ---
+            # if re.search(r"\b(hello|hey|hii|hi)\b", lower_text):
+            #     action = "shake_hand"
+            # elif re.search(r"\b(dhan nirankar ji|dhhan nirankar jii|dhaan nirankar ji|namaskar|namste|namaste)\b", lower_text):
+            #     action = "namaste"
+            # else:
+            #     action = "hand_movement"
 
-            print(f"[Immediate Robot Command]: {action}")
-            await sio.emit("robot_signal", {"action": action}, to=sid) 
+            # print(f"[Immediate Robot Command]: {action}")
+            # await sio.emit("robot_signal", {"action": action}, to=sid) 
 
 
 @sio.on("end_voice")
 async def handle_end_voice(sid):
-    """
-    Finalize STT using Google STT, then send to chatbot.
-    """
     if sid not in audio_buffers:
         return
 
     full_data = audio_buffers[sid]["full"]
-
-    # Reset buffers for this client
     audio_buffers[sid] = {"full": bytearray(), "chunk": bytearray()}
 
     text = transcribe_pcm16_audio(full_data)
 
     if text and not text.startswith("["):
         print(f"[User {sid}]: {text}")
+        lower_text = text.lower()
+
+        # --- ✅ Fixed Robot movement logic with regex ---
+        if re.search(r"\b(hello|hey|hii|hi)\b", lower_text):
+            action = "shake_hand"
+        elif re.search(r"\b(dhan nirankar ji|dhhan nirankar jii|dhaan nirankar ji|namaskar|namste|namaste)\b", lower_text):
+            action = "namaste"
+        else:
+            action = "hand_movement"
+
+        print(f"[Immediate Robot Command]: {action}")
+        await sio.emit("robot_signal", {"action": action}, to=sid) 
         await sio.emit("bot_thinking", {"status": "thinking", "user_text": text}, to=sid)
         response = chatbot.chat(sid, text)
         bot_result = await process_text_message(response, sid)
