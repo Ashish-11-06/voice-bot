@@ -114,6 +114,7 @@ async def handle_voice_chunk(sid, data):
     """
     Receive raw PCM16 audio (from ArrayBuffer) and buffer it.
     Do partial transcription on rolling window (~1 sec).
+    Also emit robot signals immediately when detecting keywords.
     """
     if sid not in audio_buffers or data is None:
         return
@@ -144,11 +145,28 @@ async def handle_voice_chunk(sid, data):
         buf[:] = buf[-CHUNK_WINDOW_SIZE:]
 
     # 🔑 Try partial transcription
-    if len(buf) > 10000:  # ~0.5 sec before attempting if 8000
+    if len(buf) > 10000:  # ~0.5 sec before attempting
         partial_text = transcribe_pcm16_audio(buf, partial=True)
         if partial_text:
             print(f"[Partial STT {sid}]: {partial_text}")
             await sio.emit("partial_text", {"text": partial_text}, to=sid)
+
+            # --- 🔑 Immediate Robot movement logic ---
+            lower_text = partial_text.lower()
+
+            if any(word in lower_text for word in ["hello", "hey", "hii", "hi"]):
+                action = "shake_hand"
+            elif any(phrase in lower_text for phrase in [
+                "dhan nirankar ji",
+                "dhhan nirankar jii",
+                "dhaan nirankar ji"
+            ]):
+                action = "namste"
+            else:
+                action = "hand_movement"
+
+            print(f"[Immediate Robot Command]: {action}")
+            await sio.emit("robot_signal", {"action": action}, to=sid) 
 
 
 @sio.on("end_voice")
