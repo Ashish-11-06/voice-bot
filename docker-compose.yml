@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  chatbot:
+    build: .
+    container_name: chatbot_app
+    command: >
+      daphne -b 0.0.0.0 -p 8001 chatbot_ws.socketio_server:app
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: always
+
+  redis:
+    image: redis:7
+    container_name: redis_server
+    ports:
+      - "6379:6379"
+    restart: always
