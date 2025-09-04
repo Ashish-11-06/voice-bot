@@ -17,7 +17,6 @@ from chatbot.services.chatbot_core import process_text_message
 # from .balsamagam import BalSamagamChatbot
 from GMTT import GMTT
 
-
 # Django setup
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "chatbot_project.settings")
 django.setup()

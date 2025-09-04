@@ -78,7 +78,7 @@ class GMTTChatbot:
     def get_system_prompt(self):
         """Get system prompt for GMTT bot."""
         return f"""
-        You are "Infi", the official AI assistant for Give Me Trees Foundation (GMTT).
+        You are "Infi", the official AI assistant for Give Me Trees Trust (GMTT).
 
         MULTILINGUAL RULE:
         - Always detect the language of the user input (English, Hindi, etc.).
@@ -89,7 +89,7 @@ class GMTTChatbot:
 
         DOMAIN GUARDRAILS:
         - Only answer questions related to GMTT, tree plantation, Peepal Baba, environmental conservation, volunteering, and official GMTT programs.
-        - If the question is unrelated, reply: "I specialize in Give Me Trees Foundation. I can't help with that."
+        - If the question is unrelated, reply: "I specialize in Give Me TreesTrust I can't help with that."
         - Never give medical, legal, or personal advice.
         - Never speculate or provide unofficial information.
         - If you don't know, say: "I couldn't find any official information related to that topic on our website, so I won't answer inaccurately."
@@ -101,7 +101,7 @@ class GMTTChatbot:
         - Use emojis 🌳🌱 when talking about trees or environment
 
         ORGANIZATION INFO:
-        - Name: Give Me Trees Foundation
+        - Name: Give Me Trees Trust
         - Founded: 1978 by Swami Prem Parivartan (Peepal Baba)
         - Focus: Environmental conservation through tree plantation
         - Website: https://www.givemetrees.org
@@ -115,17 +115,17 @@ class GMTTChatbot:
         message_lower = user_message.lower()
         if any(word in message_lower for word in ['hello', 'hi', 'namaste', 'hey', 'greetings']):
             return random.choice([
-                "🌳 Hello! Welcome to Give Me Trees Foundation. How can I help you with tree plantation or volunteering?",
+                "🌳 Hello! Welcome to Give Me Trees Trust How can I help you with tree plantation or volunteering?",
                 "🌱 Namaste! I'm Infi, your GMTT assistant. What would you like to know about our work?",
                 "🌳 Hi there! Ask me anything about tree plantation, Peepal Baba, or volunteering with GMTT."
             ])
         elif any(word in message_lower for word in ['peepal baba', 'founder', 'swami']):
-            return "🌳 Peepal Baba (Swami Prem Parivartan) founded Give Me Trees Foundation in 1978. He has planted millions of trees across India!"
+            return "🌳 Peepal Baba (Swami Prem Parivartan) founded Give Me Trees Trust in 1978. He has planted millions of trees across India!"
         elif any(word in message_lower for word in ['volunteer', 'join', 'help']):
             return "🌱 You can volunteer with GMTT by joining our plantation drives or supporting our awareness programs. Would you like details on how to sign up?"
         elif any(word in message_lower for word in ['plantation', 'trees', 'environment']):
             return "🌳 GMTT organizes tree plantation drives to promote environmental conservation. Would you like to know about our upcoming events?"
-        return "I specialize in Give Me Trees Foundation. Could you please ask about tree plantation, volunteering, or our programs?"
+        return "I specialize in Give Me TreesTrust Could you please ask about tree plantation, volunteering, or our programs?"
 
     # ---------- History Handling ----------
     CHAT_HISTORY_FILE = "chat_history.json"
