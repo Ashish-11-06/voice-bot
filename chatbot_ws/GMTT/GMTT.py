@@ -1,226 +1,204 @@
-
 import os
 import json
-import re
-import uuid
 import random
-from django.contrib.auth import get_user_model
+import redis
+import re
+import numpy as np
+from dotenv import load_dotenv
+from openai import OpenAI
 
-from .common_utils import (
-    load_knowledge_base,
-    load_session_history,
-    save_session_history,
-    search_knowledge_block,
-    call_mistral_model,
-    is_mistral_follow_up,
-    get_conversation_driver,
-    generate_nlp_response,
-    is_contact_request,
-    is_info_request,
-    CONTACT_EMAIL,
-)
-from .models import ChatbotConversation
-from .serializers import ChatbotConversationSerializer
+load_dotenv()
 
-User = get_user_model()
+class GMTTChatbot:
+    def _load_doc_qa_pairs(self):
+        """Load Q&A pairs and their embeddings from doc_embeddings.json."""
+        doc_path = os.path.join(os.path.dirname(__file__), 'doc_embeddings.json')
+        if not os.path.exists(doc_path):
+            return []
+        with open(doc_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data
 
-# -------------------- Config --------------------
-CHATBOT_NAME = "Infi"
+    CHAT_HISTORY_FILE = "chat_history.json"
 
-current_dir = os.path.dirname(__file__)
-json_dir = os.path.join(current_dir, "json_files")
-content_path = os.path.join(json_dir, "trees.json")
-history_file_path = os.path.join(json_dir, "session_history_gmtt.json")
-
-os.makedirs(json_dir, exist_ok=True)
-if not os.path.exists(history_file_path):
-    with open(history_file_path, "w") as f:
-        json.dump([], f)
-
-gmtt_kb = load_knowledge_base(content_path)
-
-
-# -------------------- DB Utils --------------------
-def store_session_in_db(history, user, chatbot_type):
-    """Persist session in DB"""
-    session_id = str(uuid.uuid4())
-    for turn in history:
-        ChatbotConversation.objects.create(
-            user=user,
-            chatbot_type=chatbot_type,
-            session_id=session_id,
-            query=turn["user"],
-            response=turn["bot"],
+    def __init__(self):
+        self.redis_client = redis.Redis(
+            host=os.getenv('REDIS_HOST', 'localhost'),
+            port=int(os.getenv('REDIS_PORT', 6379)),
+            db=0,
+            decode_responses=True
         )
-    return session_id
+        self.openai_api_key = os.getenv('OPENAI_API_KEY')
+        if not self.openai_api_key:
+            raise ValueError("OPENAI_API_KEY not found in environment variables")
+        self.client = OpenAI(api_key=self.openai_api_key)
+        self.history_file = self.CHAT_HISTORY_FILE
+        self.all_sessions = self._load_all_sessions()
+        self.qa_pairs = self._load_doc_qa_pairs()
 
-
-
-# Removed website crawling and scraping related code
-GMTT_INDEX = []
-
-
-# -------------------- Mistral Response --------------------
-def get_mistral_gmtt_response(user_query, history):
-    """LLM response restricted to GMTT rules"""
-    try:
-        if is_contact_request(user_query):
-            return (
-                f"Please share your query/feedback/message with me and I'll forward it "
-                f"to our team at {CONTACT_EMAIL}. Could you please tell me your name and email address?"
+    def get_embedding(self, text):
+        """Get embedding for a text using OpenAI embedding API."""
+        try:
+            response = self.client.embeddings.create(
+                input=[text],
+                model="text-embedding-3-small"
             )
+            return response.data[0].embedding
+        except Exception as e:
+            print(f"Embedding API Error: {e}")
+            return None
 
-        if is_info_request(user_query):
-            return (
-                f"Thank you for sharing your details! I've noted your information and will "
-                f"share it with our team at {CONTACT_EMAIL}. Is there anything specific you'd like us to know?"
-            )
+    def cosine_similarity(self, a, b):
+        a = np.array(a)
+        b = np.array(b)
+        if np.linalg.norm(a) == 0 or np.linalg.norm(b) == 0:
+            return 0.0
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
+    def find_top_doc_matches(self, user_message, top_n=3):
+        """Return top N most similar Q&A pairs from doc_embeddings.json."""
+        if not self.qa_pairs:
+            return []
+        user_emb = self.get_embedding(user_message)
+        if user_emb is None:
+            return []
+        scored = []
+        for item in self.qa_pairs:
+            q_emb = item.get("embedding")
+            if not q_emb:
+                continue
+            score = self.cosine_similarity(user_emb, q_emb)
+            scored.append({"score": score, "question": item.get("question"), "answer": item.get("answer")})
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        print(f"[DEBUG] Top doc matches:")
+        for i, match in enumerate(scored[:top_n]):
+            print(f"  {i+1}. '{match['question']}' (score={match['score']:.3f})")
+        return scored[:top_n]
 
-        match = search_knowledge_block(user_query, gmtt_kb)
-        # Website scraping removed, so no website_match or relevant_text
-        prompt = f"""
-            You are an AI assistant created exclusively for **Give Me Trees Foundation (GMTT)**.
+    def get_system_prompt(self):
+        """Get system prompt for GMTT bot."""
+        return f"""
+        You are "Infi", the official AI assistant for Give Me Trees Foundation (GMTT).
 
-            STRICT RULES:
-            1. Detect the language of the user's query and respond ONLY in that language.
-            2. If matching content is found, respond strictly using that content, rephrased naturally in the detected language.
-            3. If no relevant content is found, reply in the detected language with:
-            "I couldn't find any official information related to that topic on our website, so I won't answer inaccurately."
-            4. If the user greets or makes small talk, respond politely in the detected language.
-            5. If the question is unrelated to GMTT, reply in the detected language with:
-            "I specialize in Give Me Trees Foundation. I can't help with that."
+        MULTILINGUAL RULE:
+        - Always detect the language of the user input (English, Hindi, etc.).
+        - Respond only in the same language as the user’s input.
+        - If the user types in English letters but in another language (e.g., "ped lagana kaise shuru kare"), 
+        still recognize the intended language and respond in that language.
+        - Keep your tone and wording professional, friendly, and easy to understand.
 
-            Organization Info:
-            - Name: Give Me Trees Foundation
-            - Founded: 1978 by Swami Prem Parivartan (Peepal Baba)
-            - Focus: Environmental conservation through tree plantation
-            - Website: https://www.givemetrees.org
+        DOMAIN GUARDRAILS:
+        - Only answer questions related to GMTT, tree plantation, Peepal Baba, environmental conservation, volunteering, and official GMTT programs.
+        - If the question is unrelated, reply: "I specialize in Give Me Trees Foundation. I can't help with that."
+        - Never give medical, legal, or personal advice.
+        - Never speculate or provide unofficial information.
+        - If you don't know, say: "I couldn't find any official information related to that topic on our website, so I won't answer inaccurately."
 
-            User Query: {user_query}
-            """
+        PERSONALITY:
+        - Polite, professional, and encouraging
+        - Use short, clear sentences
+        - Add a friendly follow-up question if appropriate
+        - Use emojis 🌳🌱 when talking about trees or environment
 
-        response = call_mistral_model(prompt)
-        cleaned = re.sub(r'\[.*?\]|(Answer:|Follow-up question:)', '', response, flags=re.I).strip()
-        return cleaned[0].upper() + cleaned[1:] if cleaned else cleaned
+        ORGANIZATION INFO:
+        - Name: Give Me Trees Foundation
+        - Founded: 1978 by Swami Prem Parivartan (Peepal Baba)
+        - Focus: Environmental conservation through tree plantation
+        - Website: https://www.givemetrees.org
 
-    except Exception:
-        driver = get_conversation_driver(history, "mid")
-        return f"I'd be happy to tell you more. {driver}"
+        KNOWLEDGE BASE:
+        Use only official information about GMTT, tree plantation, volunteering, and related topics.
+        """
 
+    def get_fallback_response(self, user_message):
+        """Fallback responses for GMTT bot."""
+        message_lower = user_message.lower()
+        if any(word in message_lower for word in ['hello', 'hi', 'namaste', 'hey', 'greetings']):
+            return random.choice([
+                "🌳 Hello! Welcome to Give Me Trees Foundation. How can I help you with tree plantation or volunteering?",
+                "🌱 Namaste! I'm Infi, your GMTT assistant. What would you like to know about our work?",
+                "🌳 Hi there! Ask me anything about tree plantation, Peepal Baba, or volunteering with GMTT."
+            ])
+        elif any(word in message_lower for word in ['peepal baba', 'founder', 'swami']):
+            return "🌳 Peepal Baba (Swami Prem Parivartan) founded Give Me Trees Foundation in 1978. He has planted millions of trees across India!"
+        elif any(word in message_lower for word in ['volunteer', 'join', 'help']):
+            return "🌱 You can volunteer with GMTT by joining our plantation drives or supporting our awareness programs. Would you like details on how to sign up?"
+        elif any(word in message_lower for word in ['plantation', 'trees', 'environment']):
+            return "🌳 GMTT organizes tree plantation drives to promote environmental conservation. Would you like to know about our upcoming events?"
+        return "I specialize in Give Me Trees Foundation. Could you please ask about tree plantation, volunteering, or our programs?"
 
-# -------------------- Meta & KB --------------------
-def handle_meta_questions(user_input):
-    """Handle 'what can I ask you' style queries"""
-    meta_phrases = [
-        "what can i ask you", "suggest me some topics", "what topics can i ask",
-        "how can you help", "what do you know", "what programs do you run",
-        "what questions can i ask", "what information do you have",
-        "what can you tell me", "what should i ask",
-    ]
-    lowered = user_input.lower()
-    if any(p in lowered for p in meta_phrases):
-        return random.choice([
-            "I'm here to help with all things related to Give Me Trees Foundation! You can ask me about plantation drives, volunteering, or our environmental impact.",
-            "As a GMTT assistant, I can tell you about our conservation projects, Peepal tree initiatives, and how to support our cause.",
-            "You can ask about: our plantation drives, how to volunteer, the impact of our work, or ways to donate and partner with us.",
-            "I specialize in GMTT's environmental work — ask me about Peepal Baba, our methodology, success stories, or upcoming events.",
-            "Here are some ideas: why we focus on Peepal trees, how we ensure survival of planted trees, volunteer stories, or our school programs.",
-        ])
-    return None
+    # ---------- History Handling ----------
+    CHAT_HISTORY_FILE = "chat_history.json"
 
+    def _load_all_sessions(self):
+        """Load all chat histories (multiple users)."""
+        if os.path.exists(self.history_file):
+            with open(self.history_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return {}
 
-def format_kb_for_prompt(intent_entry):
-    """Convert KB entry into formatted text for prompt"""
-    return "\n".join([
-        f"Tag: {intent_entry.get('tag', '')}",
-        f"User Patterns: {'; '.join(intent_entry.get('patterns', []))}",
-        f"Responses: {'; '.join(intent_entry.get('response', []))}",
-        f"Follow-up Question: {intent_entry.get('follow_up', '')}",
-    ]).strip()
+    def _save_all_sessions(self):
+        """Save all chat histories back to file."""
+        with open(self.history_file, "w", encoding="utf-8") as f:
+            json.dump(self.all_sessions, f, ensure_ascii=False, indent=2)
 
+    def get_user_history(self, user_id):
+        """Get conversation history for one user from Redis"""
+        history_json = self.redis_client.get(f"session:{user_id}")
+        if history_json:
+            return json.loads(history_json)
+        return []
 
-def search_intents_and_respond(user_input):
-    """Search KB and build response"""
-    block = search_knowledge_block(user_input, gmtt_kb)
-    if not block:
-        return None
+    def update_user_history(self, user_id, role, content):
+        """Add a message to user's history in Redis"""
+        history = self.get_user_history(user_id)
+        history.append({"role": role, "content": content})
+        self.redis_client.set(f"session:{user_id}", json.dumps(history), ex=86400)
 
-    context = format_kb_for_prompt(block)
-    prompt = f"""
-You are a helpful assistant from Give Me Trees Foundation.
-Answer ONLY using the given context. Speak as "we". End with a related follow-up question.
+    def load_history(self):
+        """Load all chat histories (for backward compatibility)."""
+        return self._load_all_sessions()
 
-Context:
-{context}
+    def save_history(self, history):
+        """Save all chat histories (for backward compatibility)."""
+        self.all_sessions = history
+        self._save_all_sessions()
 
-User Question: {user_input}
-"""
-    try:
-        response = call_mistral_model(prompt, max_tokens=90)
-        cleaned = re.sub(r'\[.*?\]', '', response).strip()
-        return cleaned if cleaned.endswith(('.', '!', '?')) else f"{cleaned}."
-    except Exception:
-        return "We're having trouble processing your request right now. Could you please try again?"
-
-
-# -------------------- Response Pipeline --------------------
-def update_and_respond_with_history(user_input, current_response, user=None, chatbot_type="gmtt"):
-    """Append to history and enhance response"""
-    history = load_session_history(history_file_path)
-
-    if not is_mistral_follow_up(current_response):
-        driver = get_conversation_driver(history, "intro" if len(history) < 2 else "mid")
-        current_response += f" {driver}"
-
-    if any(h["user"].lower() == user_input.lower() for h in history[-3:]):
-        current_response = f"Returning to your question, {current_response.lower()}"
-
-    history.append({"user": user_input, "bot": current_response})
-    save_session_history(history_file_path, history)
-    return current_response
-
-
-def get_gmtt_response(user_input, user=None):
-    """Main chatbot pipeline"""
-    if not isinstance(user_input, str) or not user_input.strip():
-        return "Please provide a valid input."
-
-    history = load_session_history(history_file_path)
-    last_bot_msg = history[-1].get("bot", "") if history else ""
-
-    # Handle follow-up answers
-    if history and is_mistral_follow_up(last_bot_msg):
-        affirmative_check = call_mistral_model(
-            f'Analyze if this agrees: "{last_bot_msg}" vs "{user_input}". Reply ONLY YES/NO.'
-        )
-        if "YES" in affirmative_check.upper():
-            topic = call_mistral_model(
-                f"What was the main topic before this? Question: '{last_bot_msg}'"
-            ).strip()
-            topic_match = search_knowledge_block(topic, GMTT_INDEX)
-            matched_context = (topic_match or {}).get("text", "")[:500]
-            detail_prompt = f"""
-Explain '{topic}' in 2–3 short points for GMTT, using a professional tone.
-Context: {matched_context}
-"""
-            response = call_mistral_model(detail_prompt).strip()
-            return update_and_respond_with_history(user_input, response, user=user)
-
-    # Website guide and matched_url removed
-    response = (
-        f"My name is {CHATBOT_NAME}. What would you like to know about GMTT?" if "your name" in user_input.lower()
-        else handle_meta_questions(user_input)
-        or generate_nlp_response(user_input)
-        or search_intents_and_respond(user_input)
-        or get_mistral_gmtt_response(user_input, history)
-        or "I couldn't find specific information about that. Could you rephrase?"
-    )
-
-    final_response = update_and_respond_with_history(user_input, response, user=user)
-
-    if len(history) > 3 and not final_response.strip().endswith("?"):
-        follow_up = get_conversation_driver(history, "mid")
-        final_response += f" {follow_up}"
-
-    return final_response
+    # ---------- Chat Function ----------
+    def chat(self, session_id: str, user_message: str) -> str:
+        """Handles a chat message for a given session (sid)"""
+        self.update_user_history(session_id, "user", user_message)
+        top_matches = self.find_top_doc_matches(user_message, top_n=3)
+        # If best match is very high similarity, answer directly
+        if top_matches and top_matches[0]["score"] >= 0.85:
+            print("[INFO] Responding directly from doc_embeddings.json (high similarity)")
+            bot_reply = top_matches[0]["answer"]
+        else:
+            # Build RAG context from top matches
+            rag_context = "Use the following official GMTT information to answer the user's question.\n"
+            for i, match in enumerate(top_matches):
+                rag_context += f"Q{i+1}: {match['question']}\nA{i+1}: {match['answer']}\n"
+            # Add system prompt with guardrails and personality
+            system_prompt = self.get_system_prompt()
+            conversation_history = self.get_user_history(session_id)[-6:]
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": rag_context},
+            ]
+            for msg in conversation_history:
+                messages.append(msg)
+            messages.append({"role": "user", "content": user_message})
+            try:
+                response = self.client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages,
+                    max_tokens=300,
+                    temperature=0.7
+                )
+                bot_reply = response.choices[0].message.content
+                print("[INFO] Responding from OpenAI chat model with RAG context and system prompt")
+            except Exception as e:
+                print(f"API Error: {e}")
+                bot_reply = self.get_fallback_response(user_message)
+        self.update_user_history(session_id, "assistant", bot_reply)
+        return bot_reply

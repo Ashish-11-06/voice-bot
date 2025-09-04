@@ -11,8 +11,8 @@ load_dotenv()
 # Set your OpenAI API key
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-DOC_PATH = "SNM.docx"  # Update with your doc file path
-EMBEDDINGS_PATH = "doc_embeddings.json"
+DOC_PATH = "GMTT/GMTT.docx"  # Update with your doc file path
+EMBEDDINGS_PATH = "GMTT_embeddings.json"
 MODEL = "text-embedding-3-small"
 CHUNK_SIZE = 500  # characters per chunk
 
