@@ -12,10 +12,9 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from chatbot.services.chatbot_core import process_text_message
-# from .Kids_bot import MultiLanguageBalSamagamChatbot
-# from .blood_donation import BloodDonationChatbot
 from .balsamagam import BalSamagamChatbot
-# from GMTT import GMTT
+from .BloodDonation import blood_donation
+from GMTT import GMTT
 
 # Django setup
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "chatbot_project.settings")
@@ -25,20 +24,30 @@ django.setup()
 sio = socketio.AsyncServer(cors_allowed_origins="*", async_mode="asgi")
 app = socketio.ASGIApp(sio, socketio_path="/socket.io")
 
-# Instantiate the chatbot
-# chatbot = MultiLanguageBalSamagamChatbot()
-# chatbot = BloodDonationChatbot()
-chatbot = BalSamagamChatbot()
-# chatbot = GMTT.GMTTChatbot()
+# --- ✅ Bot registry ---
+BOT_REGISTRY = {
+    "balsamagam": BalSamagamChatbot(),
+    "blood_donation": blood_donation.BloodDonationChatbot(),
+    "gmtt": GMTT.GMTTChatbot(),
+}
 
 # Store audio buffers per client: {"full": bytearray, "chunk": bytearray}
 audio_buffers = {}
+
+# Store bot choice per client
+client_bots = {}
 
 # Init recognizer
 recognizer = sr.Recognizer()
 
 # Rolling window size for partial STT (~1 sec at 16kHz PCM16)
 CHUNK_WINDOW_SIZE = 16000 * 2  # 1 second = 16000 samples * 2 bytes
+
+
+def get_client_bot(sid):
+    """Return the assigned bot for a client, default to balsamagam."""
+    bot_name = client_bots.get(sid, "balsamagam")
+    return BOT_REGISTRY[bot_name]
 
 
 def transcribe_pcm16_audio(audio_data: bytes, sample_rate: int = 16000, partial: bool = False) -> str:
@@ -80,10 +89,13 @@ def transcribe_pcm16_audio(audio_data: bytes, sample_rate: int = 16000, partial:
         print(f"[STT] Time taken: {end_time - start_time:.3f} seconds")
 
 
+# ----------------- Socket Events -----------------
+
 @sio.event
 async def connect(sid, environ):
     print(f"Client {sid} connected")
     audio_buffers[sid] = {"full": bytearray(), "chunk": bytearray()}
+    client_bots[sid] = "balsamagam"  # default bot
     await sio.emit("server_info", {"msg": "connected", "sample_rate": 16000}, to=sid)
 
 
@@ -91,6 +103,18 @@ async def connect(sid, environ):
 async def disconnect(sid):
     print(f"Client {sid} disconnected")
     audio_buffers.pop(sid, None)
+    client_bots.pop(sid, None)
+
+
+@sio.on("select_bot")
+async def handle_select_bot(sid, data):
+    bot_name = (data or {}).get("bot", "balsamagam")
+    if bot_name in BOT_REGISTRY:
+        client_bots[sid] = bot_name
+        print(f"Client {sid} switched to bot: {bot_name}")
+        await sio.emit("bot_selected", {"bot": bot_name}, to=sid)
+    else:
+        await sio.emit("bot_error", {"error": "Invalid bot selected"}, to=sid)
 
 
 @sio.on("message")
@@ -101,7 +125,8 @@ async def handle_message(sid, data):
 
     await sio.emit("bot_thinking", {"status": "thinking"}, to=sid)
 
-    response = chatbot.chat(sid, user_text)
+    bot = get_client_bot(sid)
+    response = bot.chat(sid, user_text)
     result = await process_text_message(response, sid)
     await sio.emit("bot_reply", result, to=sid)
 
@@ -138,19 +163,6 @@ async def handle_voice_chunk(sid, data):
             print(f"[Partial STT {sid}]: {partial_text}")
             await sio.emit("partial_text", {"text": partial_text}, to=sid)
 
-            # lower_text = partial_text.lower()
-
-            # # --- ✅ Fixed Robot movement logic with regex ---
-            # if re.search(r"\b(hello|hey|hii|hi)\b", lower_text):
-            #     action = "shake_hand"
-            # elif re.search(r"\b(dhan nirankar ji|dhhan nirankar jii|dhaan nirankar ji|namaskar|namste|namaste)\b", lower_text):
-            #     action = "namaste"
-            # else:
-            #     action = "hand_movement"
-
-            # print(f"[Immediate Robot Command]: {action}")
-            # await sio.emit("robot_signal", {"action": action}, to=sid) 
-
 
 @sio.on("end_voice")
 async def handle_end_voice(sid):
@@ -166,7 +178,7 @@ async def handle_end_voice(sid):
         print(f"[User {sid}]: {text}")
         lower_text = text.lower()
 
-        # --- ✅ Fixed Robot movement logic with regex ---
+        # --- ✅ Robot movement logic ---
         if re.search(r"\b(hello|hey|hii|hi)\b", lower_text):
             action = "shake_hand"
         elif re.search(r"\b(dhan nirankar ji|dhhan nirankar jii|dhaan nirankar ji|namaskar|namste|namaste)\b", lower_text):
@@ -175,9 +187,11 @@ async def handle_end_voice(sid):
             action = "hand_movement"
 
         print(f"[Immediate Robot Command]: {action}")
-        await sio.emit("robot_signal", {"action": action}, to=sid) 
+        await sio.emit("robot_signal", {"action": action}, to=sid)
         await sio.emit("bot_thinking", {"status": "thinking", "user_text": text}, to=sid)
-        response = chatbot.chat(sid, text)
+
+        bot = get_client_bot(sid)
+        response = bot.chat(sid, text)
         bot_result = await process_text_message(response, sid)
         await sio.emit("bot_reply", bot_result, to=sid)
     else:
