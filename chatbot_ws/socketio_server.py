@@ -45,8 +45,8 @@ CHUNK_WINDOW_SIZE = 16000 * 2  # 1 second = 16000 samples * 2 bytes
 
 
 def get_client_bot(sid):
-    """Return the assigned bot for a client, default to balsamagam."""
-    bot_name = client_bots.get(sid, "balsamagam")
+    """Return the assigned bot for a client, default to gmtt."""
+    bot_name = client_bots.get(sid, "gmtt")
     return BOT_REGISTRY[bot_name]
 
 
@@ -95,7 +95,7 @@ def transcribe_pcm16_audio(audio_data: bytes, sample_rate: int = 16000, partial:
 async def connect(sid, environ):
     print(f"Client {sid} connected")
     audio_buffers[sid] = {"full": bytearray(), "chunk": bytearray()}
-    client_bots[sid] = "balsamagam"  # default bot
+    client_bots[sid] = "gmtt"  # default bot
     await sio.emit("server_info", {"msg": "connected", "sample_rate": 16000}, to=sid)
 
 
