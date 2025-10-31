@@ -12,7 +12,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from chatbot.services.chatbot_core import process_text_message
-from .balsamagam import BalSamagamChatbot
+from balsamagam import BalSamagamChatbot
 from .BloodDonation import blood_donation
 from GMTT import GMTT
 
